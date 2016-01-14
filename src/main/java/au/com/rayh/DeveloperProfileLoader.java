@@ -49,7 +49,7 @@ public class DeveloperProfileLoader extends Builder {
             throw new AbortException("No Apple developer profile is configured");
 
         // Note: keychain are usualy suffixed with .keychain. If we change we should probably clean up the ones we created
-        String keyChain = "jenkins-"+build.getProject().getFullName().replace('/', '-');
+        String keyChain = "jenkins-"+build.getProject().getFullName().replace('/', '-')+".keychain";
         String keychainPass = UUID.randomUUID().toString();
 
         ArgumentListBuilder args;
@@ -60,16 +60,43 @@ public class DeveloperProfileLoader extends Builder {
             launcher.launch().cmds(args).stdout(out).join();
         }
 
-
         args = new ArgumentListBuilder("security","create-keychain");
         args.add("-p").addMasked(keychainPass);
         args.add(keyChain);
         invoke(launcher, listener, args, "Failed to create a keychain");
+        
+        // add keychain into search list
+        {
+            listener.getLogger().println("Adding temproary keychain to KeychainAccess");
+            args = new ArgumentListBuilder("security", "list-keychains");
+            args.add("-d","user");
+            args.add("-s","login.keychain");
+            args.add(keyChain);
+            invoke(launcher, listener, args, "Failed to add temp keychain into login");
+        }
+        
+        // list keychain for debug resons
+        {
+            args = new ArgumentListBuilder("security", "list-keychains");
+            ByteArrayOutputStream output = invoke(launcher, listener, args, "Failed to list keychains");
+            listener.getLogger().write(output.toByteArray());
+        }
+        
+        // increasnig keychain lock timeout
+        {
+            args = new ArgumentListBuilder("security", "set-keychain-settings");
+            args.add("-t","3600");
+            args.add("-l");
+            args.add(keyChain);
+            invoke(launcher, listener, args, "Failed to change keychain settings");
+        }
 
-        args = new ArgumentListBuilder("security","unlock-keychain");
-        args.add("-p").addMasked(keychainPass);
-        args.add(keyChain);
-        invoke(launcher, listener, args, "Failed to unlock keychain");
+        {
+            args = new ArgumentListBuilder("security","-v","unlock-keychain");
+            args.add("-p").addMasked(keychainPass);
+            args.add(keyChain);
+            invoke(launcher, listener, args, "Failed to unlock keychain");
+        }
 
         final FilePath secret = getSecretDir(build, keychainPass);
         secret.unzipFrom(new ByteArrayInputStream(dp.getImage()));
@@ -79,9 +106,7 @@ public class DeveloperProfileLoader extends Builder {
             args = new ArgumentListBuilder("security","import");
             args.add(id).add("-k",keyChain);
             args.add("-P").addMasked(dp.getPassword().getPlainText());
-            args.add("-T","/usr/bin/codesign");
-            args.add("-T","/usr/bin/productsign");
-            args.add(keyChain);
+            args.add("-A");
             invoke(launcher, listener, args, "Failed to import identity "+id);
         }
 
@@ -92,7 +117,8 @@ public class DeveloperProfileLoader extends Builder {
             ByteArrayOutputStream output = invoke(launcher, listener, args, "Failed to show keychain info");
             listener.getLogger().write(output.toByteArray());
         }
-
+        
+        
         // copy provisioning profiles
         VirtualChannel ch = build.getBuiltOn().getChannel();
         FilePath home = ch.call(new GetHomeDirectory());    // TODO: switch to FilePath.getHomeDirectory(ch) when we can
